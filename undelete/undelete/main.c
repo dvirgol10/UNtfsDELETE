@@ -1,113 +1,58 @@
-#include <Windows.h>
+#include "main.h"
+
+#include "win32apiWrapper.h"
+#include "mftAttributes.h"
+#include "dataRunsParser.h"
+
 #include <stdio.h>
-#include <fileapi.h>
-#include <errhandlingapi.h>
-#include <stdint.h>
-
-const DWORD g_lBytesPerMFTAttributeHeader = 16;
-const DWORD g_lBytesPerAttributeResidentData = 8;
-const DWORD g_lBytesPerAttributeNonResidentData = 48; //or 56, we need to find out individully for each attribute
-
-DWORD g_lSectorsPerCluster = 0;
-DWORD g_lBytesPerSector = 0;
-DWORD g_lBytesPerCluster = 0;
-DWORD g_lBytesPerMFTEntry = 0;
 
 
-typedef struct DataRunListNode {
-	struct DataRunListNode *next;
-	uint64_t numberOfClusters;
-	int64_t numberOfStartingCluster;
-} DataRunListNode;
+extern const DWORD g_BYTES_PER_ATTRIBUTE_HEADER;
+extern const DWORD g_BYTES_PER_ATTRIBUTE_RESIDENT_DATA;
 
-
-typedef struct DataRunsList {
-	DataRunListNode *first;
-	DataRunListNode *last;
-} DataRunsList;
-
+extern const uint32_t g_STANDARD_INFORMATION_ATTRIBUTE_TYPECODE;
+extern const uint32_t g_FILE_NAME_ATTRIBUTE_TYPECODE;
+extern const uint32_t g_DATA_ATTRIBUTE_TYPECODE;
 
 
 //move the file pointer of the C: volume to the location of the starting sector of the MFT.
-//return 0 if everything is good, otherwise return 1 (for compatability with main)
+//return 1 if everything is good, otherwise return 0
 int MoveVolumePointerToMFT(HANDLE hVolume) {
 	printf("[*] Reading the VBR ...\r\n");
 	byte* lpBuffer = malloc(g_lBytesPerSector);
-	if (ReadFile(hVolume, lpBuffer, g_lBytesPerSector, NULL, NULL) == 0) { //when reading from a disk drive, the maximum number of bytes to be read has to be a multiple of sector size
-		printf("[!] Couldn't read the VBR (ReadFile): 0x%x\r\n", GetLastError());
-		return 1;
+	if (ReadFileWrapper(hVolume, lpBuffer, g_lBytesPerSector, "Couldn't read the VBR") == 0) { //when reading from a disk drive, the maximum number of bytes to be read has to be a multiple of sector size
+		return 0;
 	}
 
 	g_lBytesPerMFTEntry = 1 << (-(signed char)(lpBuffer[0x40])); //calculate the size in bytes of each MFT entry
 	printf("\r\nAn MFT entry size is %ld bytes.\r\n\r\n", g_lBytesPerMFTEntry);
 
 	printf("[*] Jumping to the location of the starting sector of the MFT"); 
-	//calculate the first MFT cluster, then multiply it by cluster size in bytes
+	//calculate the first MFT cluster number, then multiply it by cluster size in bytes
 	LONGLONG QuadPart = 0;
 	memcpy(&QuadPart, lpBuffer + 0x30, 8);
 	QuadPart *= g_lBytesPerCluster;
 	free(lpBuffer);
-	LARGE_INTEGER liDistanceToMove;
+	LARGE_INTEGER liDistanceToMove = { 0 };
 	liDistanceToMove.QuadPart = QuadPart;
 	printf(" in address 0x%016X ...\r\n", (int)liDistanceToMove.QuadPart);
 
-	LARGE_INTEGER lNewFilePointer;
-	if (SetFilePointerEx(hVolume, liDistanceToMove, &lNewFilePointer, FILE_BEGIN) == 0) {
-		printf("[!] Couldn't jump to the location of the starting sector of the MFT (SetFilePointerEx): 0x%x\r\n", GetLastError());
-		return 1;
+	LARGE_INTEGER lNewFilePointer = { 0 };
+	if (SetFilePointerExWrapper(hVolume, liDistanceToMove, (PLARGE_INTEGER) &lNewFilePointer, FILE_BEGIN, "Couldn't jump to the location of the starting sector of the MFT") == 0) {
+		return 0;
 	}
 	if (lNewFilePointer.QuadPart != liDistanceToMove.QuadPart) {
 		printf("[!] The new file pointer is of address 0x%016X, which is not the desired address.\r\n", (int)lNewFilePointer.QuadPart);
-		return 1;
-	}
-
-	return 0;
-}
-
-
-uint16_t findAttributeHeaderOffset(byte* mftEntryBuffer, uint32_t attributeType) {
-	uint16_t attributeHeaderOffset;
-	memcpy(&attributeHeaderOffset, mftEntryBuffer + 0x14, 2); //retrieve the first attribute header offset from the MFT entry header
-	
-	uint32_t currentAttributeType;
-	memcpy(&currentAttributeType, mftEntryBuffer + attributeHeaderOffset, 4);
-	uint32_t attributeSize;
-	while (currentAttributeType != attributeType && currentAttributeType != 0xFFFFFFFF) { //0xFFFFFFFF is end-of-attributes marker
-		memcpy(&attributeSize, mftEntryBuffer + attributeHeaderOffset + 4, 4);
-		attributeHeaderOffset += attributeSize; //move to the next attribute
-		memcpy(&currentAttributeType, mftEntryBuffer + attributeHeaderOffset, 4);
-
-	}
-	if (currentAttributeType == 0xFFFFFFFF) { //if there is no attribute of attributeType
 		return 0;
 	}
-	return attributeHeaderOffset;
+
+	return 1;
 }
 
-
-uint16_t findFileNameAttribute(byte* mftEntryBuffer) {
-	return findAttributeHeaderOffset(mftEntryBuffer, 0x00000030);  //0x00000030 is the attribute type value of $FILE_NAME attribute
-}
-
-
-uint16_t findDataAttribute(byte* mftEntryBuffer) {
-	return findAttributeHeaderOffset(mftEntryBuffer, 0x00000080); //0x00000080 is the attribute type value of $DATA attribute
-}
-
-
-uint16_t findStandardInformationAttribute(byte* mftEntryBuffer) {
-	return findAttributeHeaderOffset(mftEntryBuffer, 0x00000010); //0x00000010 is the attribute type value of $STANDARD_INFORMATION attribute
-}
 
 //check the signature of the MFT entry to determine whether it is a valid entry or not (0x46494c45 = "FILE")
 BOOL isValidMFTEntry(byte* mftEntryBuffer) {
 	return mftEntryBuffer[0x0] == 0x46 && mftEntryBuffer[0x1] == 0x49 && mftEntryBuffer[0x2] == 0x4c && mftEntryBuffer[0x3] == 0x45; 
-}
-
-
-//return TRUE iff the attribute corresponds to attributeHeaderOffset is resident
-BOOL isResident(byte* mftEntryBuffer, uint16_t attributeHeaderOffset) {
-	return mftEntryBuffer[attributeHeaderOffset + 0x8] == 0x00; //check if the actual attribute non-resident flag is not set (meaning RESIDENT_FORM)
 }
 
 
@@ -118,15 +63,14 @@ BOOL isDeletedFile(byte* mftEntryBuffer) {
 
 
 BOOL isSystemFile(byte* mftEntryBuffer) {
-	uint16_t standardInformationAttributeHeaderOffset = findStandardInformationAttribute(mftEntryBuffer);
+	uint16_t standardInformationAttributeHeaderOffset = findAttributeHeaderOffset(mftEntryBuffer, g_STANDARD_INFORMATION_ATTRIBUTE_TYPECODE);
 	if (standardInformationAttributeHeaderOffset == 0) { //if there is no $STANDARD_INFORMATION attribute in the MFT entry
 		return FALSE;
 	}
 
-
 	if (isResident(mftEntryBuffer, standardInformationAttributeHeaderOffset)) { //if the actual attribute is resident
-		uint16_t standardInformationAttributeOffset = standardInformationAttributeHeaderOffset + g_lBytesPerMFTAttributeHeader + g_lBytesPerAttributeResidentData;
-		uint32_t fileAttributeFlags;
+		uint16_t standardInformationAttributeOffset = standardInformationAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER + g_BYTES_PER_ATTRIBUTE_RESIDENT_DATA;
+		uint32_t fileAttributeFlags = 0;
 		memcpy(&fileAttributeFlags, mftEntryBuffer + standardInformationAttributeOffset + 0x20, 4);
 		return fileAttributeFlags & 0x00000004; //0x00000004 is the value for FILE_ATTRIBUTE_SYSTEM flag
 	}
@@ -137,79 +81,17 @@ BOOL isSystemFile(byte* mftEntryBuffer) {
 }
 
 
-DataRunsList* parseDataRuns(byte* mftEntryBuffer, uint16_t attributeHeaderOffset) {
-	if (isResident(mftEntryBuffer, attributeHeaderOffset)) { //make sure that the attribute is non-resident
-		return 0;
-	}
-	uint16_t attributeNonResidentDataOffset = attributeHeaderOffset + g_lBytesPerMFTAttributeHeader; //arrive to the attribute non-resident data
-	uint16_t dataRunsOffset;
-	memcpy(&dataRunsOffset, mftEntryBuffer + attributeNonResidentDataOffset + 0x10, 2);
-
-	DataRunsList* dataRunList = (DataRunsList*)malloc(sizeof(DataRunsList));
-
-	uint16_t offsetOfDataRunElement = attributeHeaderOffset + dataRunsOffset;
-	
-	DataRunListNode* firstDataRunListNode = (DataRunListNode*)malloc(sizeof(DataRunListNode));
-	uint8_t numberOfClustersValueSize = mftEntryBuffer[offsetOfDataRunElement] & 0x0F; //retrieve the lower nibble of the value size tuple
-	uint8_t numberOfStartingClusterValueSize = (mftEntryBuffer[offsetOfDataRunElement] & 0xF0) >> 4; //retrieve the upper nibble of the value size tuple
-	offsetOfDataRunElement += 1;
-	
-	//retrieve the actual information of the (first) data run elemnt
-	uint64_t numberOfClusters = 0;
-	memcpy(&numberOfClusters, mftEntryBuffer + offsetOfDataRunElement, numberOfClustersValueSize);
-	int64_t numberOfStartingCluster = 0;
-	memcpy(&numberOfStartingCluster, mftEntryBuffer + offsetOfDataRunElement + numberOfClustersValueSize, numberOfStartingClusterValueSize);
-	offsetOfDataRunElement += numberOfClustersValueSize + numberOfStartingClusterValueSize;
-
-	*firstDataRunListNode = (DataRunListNode){ 0, numberOfClusters, numberOfStartingCluster };
-	*dataRunList = (DataRunsList){ firstDataRunListNode , firstDataRunListNode };
-
-	DataRunListNode* dataRunListNode = 0;
-	uint8_t relativeNumberOfStartingClusterValueSize = 0;
-	int64_t relativeNumberOfStartingCluster = 0;
-	while (mftEntryBuffer[offsetOfDataRunElement] != 0) { //the last element in the runlist is a 0 byte
-		dataRunListNode = (DataRunListNode*)malloc(sizeof(DataRunListNode));
-		
-		numberOfClustersValueSize = mftEntryBuffer[offsetOfDataRunElement] & 0x0F; //retrieve the lower nibble of the value size tuple
-		relativeNumberOfStartingClusterValueSize = (mftEntryBuffer[offsetOfDataRunElement] & 0xF0) >> 4; //retrieve the upper nibble of the value size tuple
-		offsetOfDataRunElement += 1;
-
-		//retrieve the actual information of the (first) data run elemnt
-		numberOfClusters = 0;
-		memcpy(&numberOfClusters, mftEntryBuffer + offsetOfDataRunElement, numberOfClustersValueSize);
-		relativeNumberOfStartingCluster = 0;
-		memcpy(&relativeNumberOfStartingCluster, mftEntryBuffer + offsetOfDataRunElement + numberOfClustersValueSize, relativeNumberOfStartingClusterValueSize);
-		offsetOfDataRunElement += numberOfClustersValueSize + relativeNumberOfStartingClusterValueSize;
-
-		//the relative number of starting cluster in the data run is a signed value, so we have to check if its most significant bit (MSB) is set,
-		//	and then cast this number to a proper 64-bit signed integer (int64_t)
-		if (relativeNumberOfStartingCluster & (((int64_t)1) << (relativeNumberOfStartingClusterValueSize * 8 - 1))) { //check if its most significant bit (MSB) is set
-			for (int64_t i = relativeNumberOfStartingClusterValueSize; i < 8; i++) { //convert the remaining bits to FFF..., thus it will be a proper 64-bit signed integer
-				relativeNumberOfStartingCluster |= (((int64_t)0xFF) << (i * 8));
-			}
-		}
-
-		*dataRunListNode = (DataRunListNode){ 0, numberOfClusters, dataRunList->last->numberOfStartingCluster + relativeNumberOfStartingCluster }; //the cluster number in the data run is an offset to that of the previous data run
-		//maintain the members of the list
-		dataRunList->last->next = dataRunListNode;
-		dataRunList->last = dataRunListNode;
-	}
-
-	return dataRunList;
-}
-
-
-
+//TODO: deal also with long names (a MFT entry with multiple $FILE_NAME attributes)
 wchar_t* getName(byte* mftEntryBuffer) {
-	uint16_t fileNameAttributeHeaderOffset = findFileNameAttribute(mftEntryBuffer);
+	uint16_t fileNameAttributeHeaderOffset = findAttributeHeaderOffset(mftEntryBuffer, g_FILE_NAME_ATTRIBUTE_TYPECODE);
 	if (fileNameAttributeHeaderOffset == 0) { //if there is no $FILE_NAME attribute in the MFT entry
 		return 0;
 	}
 
 	if (isResident(mftEntryBuffer, fileNameAttributeHeaderOffset)) { //if the actual attribute is resident
-		uint16_t fileNameAttributeOffset = fileNameAttributeHeaderOffset + g_lBytesPerMFTAttributeHeader + g_lBytesPerAttributeResidentData;
-		uint64_t nameStringSize = (mftEntryBuffer[fileNameAttributeOffset + 0x40]); //retrieve the amount of wide characters in the name
-		wchar_t* name = calloc(nameStringSize + 1, 2); //add 1 to nameStringSize for the null terminator
+		uint16_t fileNameAttributeOffset = fileNameAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER + g_BYTES_PER_ATTRIBUTE_RESIDENT_DATA;
+		uint8_t nameStringSize = mftEntryBuffer[fileNameAttributeOffset + 0x40]; //retrieve the amount of wide characters in the name
+		wchar_t* name = calloc(nameStringSize + 1, 2); //add 1 to nameStringSize for the null terminator, each wide character consists of two bytes
 		memcpy(name, mftEntryBuffer + fileNameAttributeOffset + 0x42, nameStringSize * 2);
 		return name;
 	}
@@ -221,8 +103,8 @@ wchar_t* getName(byte* mftEntryBuffer) {
 
 
 uint64_t getFileSize(byte* mftEntryBuffer) {
-	uint16_t dataAttributeHeaderOffset = findDataAttribute(mftEntryBuffer);
-	if (dataAttributeHeaderOffset == -1) { //if there is no $DATA attribute in the MFT entry
+	uint16_t dataAttributeHeaderOffset = findAttributeHeaderOffset(mftEntryBuffer, g_DATA_ATTRIBUTE_TYPECODE);
+	if (dataAttributeHeaderOffset == 0) { //if there is no $DATA attribute in the MFT entry
 		return 0; 
 	}
 
@@ -231,44 +113,39 @@ uint64_t getFileSize(byte* mftEntryBuffer) {
 		printf("[!] Error: The $MFT file has to be non-resident. Something is wrong!"); //the $DATA attribute of $MFT contains the content of the $MFT file, which is bigger than a single MFT entry
 	}
 	else { //if the actual attribute is non-resident flag is set (meaning NONRESIDENT_FORM)
-		uint16_t dataAttributeNonResidentDataOffset = dataAttributeHeaderOffset + g_lBytesPerMFTAttributeHeader; //arrive to the attribute non-resident data
+		uint16_t dataAttributeNonResidentDataOffset = dataAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER; //arrive to the attribute non-resident data
 		memcpy(&fileSize, mftEntryBuffer + dataAttributeNonResidentDataOffset + 0x20, 8);
 	}
 	return fileSize;
 }
 
 
-
-
 void printAllDeletedFiles(HANDLE hVolume, BOOL includeSystemFiles) {
 	byte* mftEntryBuffer = malloc(g_lBytesPerMFTEntry);
-	if (ReadFile(hVolume, mftEntryBuffer, g_lBytesPerMFTEntry, NULL, NULL) == 0) { //read the first entry of the MFT, which is the entry for $MFT
-		printf("[!] Couldn't read MFT entry (ReadFile): 0x%x\r\n", GetLastError());
+	if (ReadFileWrapper(hVolume, mftEntryBuffer, g_lBytesPerMFTEntry, "Couldn't read MFT entry") == 0) { //read the first entry of the MFT, which is the entry for $MFT
+		return;
 	}
 
 	uint64_t mftFileSize = getFileSize(mftEntryBuffer); //get the size of the $MFT file
 	uint64_t amountOfMFTEntries = mftFileSize / g_lBytesPerMFTEntry; //calculate the size of the $MFT file
-	printf("The size of the $MFT file is %d bytes, which means it has %d entries.\r\n", mftFileSize, amountOfMFTEntries);
+	printf("The size of the $MFT file is %llu bytes, which means it has %llu entries.\r\n", mftFileSize, amountOfMFTEntries);
 
 	//---------------------------
 	printf("Data Run of $DATA attribute of %MFT:\r\n");
-	DataRunsList* dataRunsListOfDataAttributOfMFT = parseDataRuns(mftEntryBuffer, findDataAttribute(mftEntryBuffer));
+	DataRunsList* dataRunsListOfDataAttributOfMFT = parseDataRuns(mftEntryBuffer, findAttributeHeaderOffset(mftEntryBuffer, g_DATA_ATTRIBUTE_TYPECODE));
 	DataRunListNode* dataRunListNode = dataRunsListOfDataAttributOfMFT->first;
-	while (dataRunListNode != 0) {
+	while (dataRunListNode != NULL) {
 		printf("0x%X clusters start in cluster number 0x%016llX\r\n", dataRunListNode->numberOfClusters, dataRunListNode->numberOfStartingCluster);
 		dataRunListNode = dataRunListNode->next;
 
 	}
 	//---------------------------
 
-
-
-
 	int mftEntryNumber = 1; //MFT entry number zero is the entry of $MFT
 
 	do {
-		if (ReadFile(hVolume, mftEntryBuffer, g_lBytesPerMFTEntry, NULL, NULL) == 0) { //read the next MFT entry
-		printf("[!] Couldn't read MFT entry (ReadFile): 0x%x\r\n", GetLastError());
+		if (ReadFileWrapper(hVolume, mftEntryBuffer, g_lBytesPerMFTEntry, "Couldn't read MFT entry") == 0) {
+			return;
 		}
 		
 		if (isValidMFTEntry(mftEntryBuffer)) {
@@ -289,6 +166,7 @@ void printAllDeletedFiles(HANDLE hVolume, BOOL includeSystemFiles) {
 				}
 			}
 		}
+
 		++mftEntryNumber;
 	} while (mftEntryNumber < amountOfMFTEntries);
 
@@ -297,38 +175,29 @@ void printAllDeletedFiles(HANDLE hVolume, BOOL includeSystemFiles) {
 
 
 int main() {
-
 	//get the size of sector and cluster in c: volume
-	DWORD junk = 0;
-	if (GetDiskFreeSpaceA("\\\\.\\C:\\", (LPDWORD)&g_lSectorsPerCluster, (LPDWORD)&g_lBytesPerSector, (LPDWORD)&junk, (LPDWORD)&junk) == 0) {
-		printf("[!] Couldn't retrieve information about C: volume (GetDiskFreeSpaceA): 0x%x\r\n", GetLastError());
+	if (GetDiskFreeSpaceAWrapper("\\\\.\\C:\\", (LPDWORD)&g_lSectorsPerCluster, (LPDWORD)&g_lBytesPerSector, "Couldn't retrieve information about C: volume") == 0) {
+		return 1;
 	}
 
 	g_lBytesPerCluster = g_lSectorsPerCluster * g_lBytesPerSector;
 	printf("Sector size is %ld bytes.\r\n", g_lBytesPerSector);
 	printf("Cluster is %ld sectors = %ld bytes.\r\n\r\n", g_lSectorsPerCluster, g_lBytesPerCluster);
 
-
-
 	printf("[*] Opening C: volume ...\r\n");
-	HANDLE hVolume = CreateFileW(L"\\\\.\\C:", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_SYSTEM, NULL);
+	HANDLE hVolume = CreateFileWWrapper(L"\\\\.\\C:", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_SYSTEM, "Couldn't open C: volume");
 	if (hVolume == INVALID_HANDLE_VALUE) {
-		printf("[!] Couldn't open C: volume (CreateFileW): 0x%x\r\n", GetLastError());
 		return 1;
 	}
 
-	if (MoveVolumePointerToMFT(hVolume) != 0) {
+	if (MoveVolumePointerToMFT(hVolume) == 0) {
 		return 1;
 	}
-
 
 	printAllDeletedFiles(hVolume, FALSE);
 
-
-
 	printf("[*] Closing C: volume handle...\r\n");
-	if (CloseHandle(hVolume) == 0) {
-		printf("[!] Couldn't close the handle of C: volume (CloseHandle): 0x%x\r\n", GetLastError());
+	if (CloseHandleWrapper(hVolume, "Couldn't close the handle of C: volume") == 0) {
 		return 1;
 	}
 
