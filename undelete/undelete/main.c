@@ -29,20 +29,13 @@ int MoveVolumePointerToMFT(HANDLE hVolume) {
 
 	printf("[*] Jumping to the location of the starting sector of the MFT"); 
 	//calculate the first MFT cluster number, then multiply it by cluster size in bytes
-	LONGLONG QuadPart = 0;
-	memcpy(&QuadPart, lpBuffer + 0x30, 8);
-	QuadPart *= g_lBytesPerCluster;
+	LONGLONG lDistanceToMove = 0;
+	memcpy(&lDistanceToMove, lpBuffer + 0x30, 8);
+	lDistanceToMove *= g_lBytesPerCluster;
 	free(lpBuffer);
-	LARGE_INTEGER liDistanceToMove = { 0 };
-	liDistanceToMove.QuadPart = QuadPart;
-	printf(" in address 0x%016X ...\r\n", (int)liDistanceToMove.QuadPart);
+	printf(" in address 0x%016X ...\r\n", (int)lDistanceToMove);
 
-	LARGE_INTEGER lNewFilePointer = { 0 };
-	if (SetFilePointerExWrapper(hVolume, liDistanceToMove, (PLARGE_INTEGER) &lNewFilePointer, FILE_BEGIN, "Couldn't jump to the location of the starting sector of the MFT") == 0) {
-		return 0;
-	}
-	if (lNewFilePointer.QuadPart != liDistanceToMove.QuadPart) {
-		printf("[!] The new file pointer is of address 0x%016X, which is not the desired address.\r\n", (int)lNewFilePointer.QuadPart);
+	if (SetFilePointerExWrapper(hVolume, lDistanceToMove, "Couldn't jump to the location of the starting sector of the MFT") == 0) {
 		return 0;
 	}
 
@@ -59,25 +52,6 @@ BOOL isValidMFTEntry(byte* mftEntryBuffer) {
 //return TRUE iff the MFT entry is of deleted file
 BOOL isDeletedFile(byte* mftEntryBuffer) {
 	return mftEntryBuffer[0x16] == 0x00; //check the entry flags. 0x00 means deleted file
-}
-
-
-BOOL isSystemFile(byte* mftEntryBuffer) {
-	uint16_t standardInformationAttributeHeaderOffset = findAttributeHeaderOffset(mftEntryBuffer, g_STANDARD_INFORMATION_ATTRIBUTE_TYPECODE);
-	if (standardInformationAttributeHeaderOffset == 0) { //if there is no $STANDARD_INFORMATION attribute in the MFT entry
-		return FALSE;
-	}
-
-	if (isResident(mftEntryBuffer, standardInformationAttributeHeaderOffset)) { //if the actual attribute is resident
-		uint16_t standardInformationAttributeOffset = standardInformationAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER + g_BYTES_PER_ATTRIBUTE_RESIDENT_DATA;
-		uint32_t fileAttributeFlags = 0;
-		memcpy(&fileAttributeFlags, mftEntryBuffer + standardInformationAttributeOffset + 0x20, 4);
-		return fileAttributeFlags & 0x00000004; //0x00000004 is the value for FILE_ATTRIBUTE_SYSTEM flag
-	}
-	else {
-		//to be continued...
-	}
-	return FALSE;
 }
 
 
@@ -114,13 +88,13 @@ uint64_t getFileSize(byte* mftEntryBuffer) {
 	}
 	else { //if the actual attribute is non-resident flag is set (meaning NONRESIDENT_FORM)
 		uint16_t dataAttributeNonResidentDataOffset = dataAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER; //arrive to the attribute non-resident data
-		memcpy(&fileSize, mftEntryBuffer + dataAttributeNonResidentDataOffset + 0x20, 8);
+		memcpy(&fileSize, mftEntryBuffer + dataAttributeNonResidentDataOffset + 0x20, 8); //note: this is the valid data size 
 	}
 	return fileSize;
 }
 
 
-void printAllDeletedFiles(HANDLE hVolume, BOOL includeSystemFiles) {
+void printAllDeletedFiles(HANDLE hVolume) {
 	byte* mftEntryBuffer = malloc(g_lBytesPerMFTEntry);
 	if (ReadFileWrapper(hVolume, mftEntryBuffer, g_lBytesPerMFTEntry, "Couldn't read MFT entry") == 0) { //read the first entry of the MFT, which is the entry for $MFT
 		return;
@@ -141,34 +115,41 @@ void printAllDeletedFiles(HANDLE hVolume, BOOL includeSystemFiles) {
 	}
 	//---------------------------
 
-	int mftEntryNumber = 1; //MFT entry number zero is the entry of $MFT
+	int mftEntryNumber = 0; //MFT entry number zero is the entry of $MFT
 
-	do {
-		if (ReadFileWrapper(hVolume, mftEntryBuffer, g_lBytesPerMFTEntry, "Couldn't read MFT entry") == 0) {
-			return;
+	
+	dataRunListNode = dataRunsListOfDataAttributOfMFT->first;
+	//move through the data runs 
+	while (dataRunListNode != NULL) {
+		uint64_t startingAddressOfCurrentDataRun = dataRunListNode->numberOfStartingCluster * g_lBytesPerCluster; //calculate the starting address of the corresponding data run
+		if (SetFilePointerExWrapper(hVolume, startingAddressOfCurrentDataRun, "Couldn't jump to the location of the data run of $MFT") == 0) {
+			return 0;
 		}
-		
-		if (isValidMFTEntry(mftEntryBuffer)) {
-			//wchar_t* name = getName(mftEntryBuffer);
-			//if (name != 0) {
-			//	printf("%d: \"%ws\"\r\n", mftEntryNumber, name);
-			//	}
-			//	free(name);
-			//}
-		
-			if (isDeletedFile(mftEntryBuffer)) {
-				if (includeSystemFiles || !isSystemFile(mftEntryBuffer)) {
-					wchar_t* deletedFileName = getName(mftEntryBuffer);
-					if (deletedFileName != 0) { //if valid file name
-						printf("MFT entry number %d (offset 0x%08x) of file \"%ws\" is marked as deleted.\r\n", mftEntryNumber, mftEntryNumber * g_lBytesPerMFTEntry, deletedFileName);
-						free(deletedFileName);
+
+		for (int i = 0; i < dataRunListNode->numberOfClusters * (g_lBytesPerCluster / g_lBytesPerMFTEntry); i++) { //read all the MFT entries of the current data run
+
+			if (mftEntryNumber < amountOfMFTEntries) {
+				if (ReadFileWrapper(hVolume, mftEntryBuffer, g_lBytesPerMFTEntry, "Couldn't read MFT entry") == 0) {
+					return;
+				}
+
+				if (isValidMFTEntry(mftEntryBuffer)) {
+					if (isDeletedFile(mftEntryBuffer)) {
+						wchar_t* deletedFileName = getName(mftEntryBuffer);
+						if (deletedFileName != 0) { //if valid file name
+							printf("MFT entry number %d (offset 0x%08x) of file \"%ws\" is marked as deleted.\r\n", mftEntryNumber, mftEntryNumber * g_lBytesPerMFTEntry, deletedFileName);
+							free(deletedFileName);
+						}
 					}
 				}
+
+				++mftEntryNumber;
 			}
+
 		}
 
-		++mftEntryNumber;
-	} while (mftEntryNumber < amountOfMFTEntries);
+		dataRunListNode = dataRunListNode->next; //advance in the linked list
+	}
 
 	free(mftEntryBuffer);
 }
@@ -194,7 +175,7 @@ int main() {
 		return 1;
 	}
 
-	printAllDeletedFiles(hVolume, FALSE);
+	printAllDeletedFiles(hVolume);
 
 	printf("[*] Closing C: volume handle...\r\n");
 	if (CloseHandleWrapper(hVolume, "Couldn't close the handle of C: volume") == 0) {

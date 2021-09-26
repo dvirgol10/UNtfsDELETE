@@ -38,9 +38,16 @@ BOOL ReadFileWrapper(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, 
 
 
 //return 1 if everything is good, otherwise return 0
-BOOL SetFilePointerExWrapper(HANDLE hFile, LARGE_INTEGER liDistanceToMove, PLARGE_INTEGER lpNewFilePointer, DWORD dwMoveMethod, char* errorMessage) {
-	if (SetFilePointerEx(hFile, liDistanceToMove, lpNewFilePointer, dwMoveMethod) == 0) {
+BOOL SetFilePointerExWrapper(HANDLE hFile, LONGLONG lDistanceToMove, char* errorMessage) {
+	LARGE_INTEGER liDistanceToMove = { 0 };
+	liDistanceToMove.QuadPart = lDistanceToMove;
+	LARGE_INTEGER lNewFilePointer = { 0 };
+	if (SetFilePointerEx(hFile, liDistanceToMove, (PLARGE_INTEGER)&lNewFilePointer, FILE_BEGIN) == 0) {
 		printErrorMessage(errorMessage, "SetFilePointerEx");
+		return 0;
+	}
+	if (lNewFilePointer.QuadPart != liDistanceToMove.QuadPart) {
+		printf("[!] The new file pointer is of address 0x%016X, which is not the desired address (0x%016X).\r\n", (int)lNewFilePointer.QuadPart, (int)liDistanceToMove.QuadPart);
 		return 0;
 	}
 	return 1;

@@ -38,3 +38,23 @@ uint16_t findAttributeHeaderOffset(byte* mftEntryBuffer, uint32_t attributeTypeC
 BOOL isResident(byte* mftEntryBuffer, uint16_t attributeHeaderOffset) {
 	return mftEntryBuffer[attributeHeaderOffset + 0x8] == 0x00; //check if the actual attribute non-resident flag is not set (meaning RESIDENT_FORM)
 }
+
+
+//return the file attribute flags that are stored in $STANDARD_INFORMATION attribute
+uint32_t getFileAttributeFlags(byte* mftEntryBuffer) {
+	uint16_t standardInformationAttributeHeaderOffset = findAttributeHeaderOffset(mftEntryBuffer, g_STANDARD_INFORMATION_ATTRIBUTE_TYPECODE);
+	if (standardInformationAttributeHeaderOffset == 0) { //if there is no $STANDARD_INFORMATION attribute in the MFT entry
+		return 0;
+	}
+
+	if (isResident(mftEntryBuffer, standardInformationAttributeHeaderOffset)) { //if the actual attribute is resident
+		uint16_t standardInformationAttributeOffset = standardInformationAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER + g_BYTES_PER_ATTRIBUTE_RESIDENT_DATA;
+		uint32_t fileAttributeFlags = 0;
+		memcpy(&fileAttributeFlags, mftEntryBuffer + standardInformationAttributeOffset + 0x20, 4);
+		return fileAttributeFlags;
+	}
+	else {
+		//to be continued...
+	}
+	return 0;
+}

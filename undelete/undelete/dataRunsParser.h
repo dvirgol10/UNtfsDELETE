@@ -11,7 +11,7 @@
 typedef struct DataRunListNode {
 	struct DataRunListNode* next;
 	uint64_t numberOfClusters;
-	int64_t numberOfStartingCluster;
+	uint64_t numberOfStartingCluster;
 } DataRunListNode;
 
 typedef struct DataRunsList {
