@@ -58,3 +58,44 @@ uint32_t getFileAttributeFlags(byte* mftEntryBuffer) {
 	}
 	return 0;
 }
+
+
+//TODO: deal also with long names (a MFT entry with multiple $FILE_NAME attributes)
+wchar_t* getName(byte* mftEntryBuffer) {
+	uint16_t fileNameAttributeHeaderOffset = findAttributeHeaderOffset(mftEntryBuffer, g_FILE_NAME_ATTRIBUTE_TYPECODE);
+	if (fileNameAttributeHeaderOffset == 0) { //if there is no $FILE_NAME attribute in the MFT entry
+		return 0;
+	}
+
+	if (isResident(mftEntryBuffer, fileNameAttributeHeaderOffset)) { //if the actual attribute is resident
+		uint16_t fileNameAttributeOffset = fileNameAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER + g_BYTES_PER_ATTRIBUTE_RESIDENT_DATA;
+		uint8_t nameStringSize = mftEntryBuffer[fileNameAttributeOffset + 0x40]; //retrieve the amount of wide characters in the name
+		wchar_t* name = calloc(nameStringSize + 1, 2); //add 1 to nameStringSize for the null terminator, each wide character consists of two bytes
+		memcpy(name, mftEntryBuffer + fileNameAttributeOffset + 0x42, nameStringSize * 2);
+		return name;
+	}
+	else {
+		//to be continued...
+	}
+	return 0;
+}
+
+
+//return the valid data size (in bytes) of the file
+uint64_t getFileValidDataSize(byte* mftEntryBuffer) {
+	uint16_t dataAttributeHeaderOffset = findAttributeHeaderOffset(mftEntryBuffer, g_DATA_ATTRIBUTE_TYPECODE);
+	if (dataAttributeHeaderOffset == 0) { //if there is no $DATA attribute in the MFT entry
+		return 0;
+	}
+
+	uint64_t fileSize = 0;
+	if (isResident(mftEntryBuffer, dataAttributeHeaderOffset)) { //if the actual attribute is resident
+		uint16_t dataAttributeNonResidentDataOffset = dataAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER; //arrive to the attribute resident data
+		memcpy(&fileSize, mftEntryBuffer + dataAttributeNonResidentDataOffset, 4); //note: this is the valid data size 
+	}
+	else { //if the actual attribute is non-resident flag is set (meaning NONRESIDENT_FORM)
+		uint16_t dataAttributeNonResidentDataOffset = dataAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER; //arrive to the attribute non-resident data
+		memcpy(&fileSize, mftEntryBuffer + dataAttributeNonResidentDataOffset + 0x20, 8); //note: this is the valid data size 
+	}
+	return fileSize;
+}

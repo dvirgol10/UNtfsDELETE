@@ -3,6 +3,7 @@
 #include "win32apiWrapper.h"
 #include "mftAttributes.h"
 #include "dataRunsParser.h"
+#include "recover.h"
 
 #include <stdio.h>
 
@@ -15,12 +16,12 @@ extern const uint32_t g_FILE_NAME_ATTRIBUTE_TYPECODE;
 extern const uint32_t g_DATA_ATTRIBUTE_TYPECODE;
 
 
-//move the file pointer of the C: volume to the location of the starting sector of the MFT.
+//move the file pointer of the drive to the location of the starting sector of the MFT.
 //return 1 if everything is good, otherwise return 0
-int MoveVolumePointerToMFT(HANDLE hVolume) {
+int MoveDrivePointerToMFT(HANDLE hDrive) {
 	printf("[*] Reading the VBR ...\r\n");
 	byte* lpBuffer = malloc(g_lBytesPerSector);
-	if (ReadFileWrapper(hVolume, lpBuffer, g_lBytesPerSector, "Couldn't read the VBR") == 0) { //when reading from a disk drive, the maximum number of bytes to be read has to be a multiple of sector size
+	if (ReadFileWrapper(hDrive, lpBuffer, g_lBytesPerSector, "Couldn't read the VBR") == 0) { //when reading from a disk drive, the maximum number of bytes to be read has to be a multiple of sector size
 		return 0;
 	}
 
@@ -35,7 +36,7 @@ int MoveVolumePointerToMFT(HANDLE hVolume) {
 	free(lpBuffer);
 	printf(" in address 0x%016X ...\r\n", (int)lDistanceToMove);
 
-	if (SetFilePointerExWrapper(hVolume, lDistanceToMove, "Couldn't jump to the location of the starting sector of the MFT") == 0) {
+	if (SetFilePointerExWrapper(hDrive, lDistanceToMove, "Couldn't jump to the location of the starting sector of the MFT") == 0) {
 		return 0;
 	}
 
@@ -55,81 +56,32 @@ BOOL isDeletedFile(byte* mftEntryBuffer) {
 }
 
 
-//TODO: deal also with long names (a MFT entry with multiple $FILE_NAME attributes)
-wchar_t* getName(byte* mftEntryBuffer) {
-	uint16_t fileNameAttributeHeaderOffset = findAttributeHeaderOffset(mftEntryBuffer, g_FILE_NAME_ATTRIBUTE_TYPECODE);
-	if (fileNameAttributeHeaderOffset == 0) { //if there is no $FILE_NAME attribute in the MFT entry
-		return 0;
-	}
-
-	if (isResident(mftEntryBuffer, fileNameAttributeHeaderOffset)) { //if the actual attribute is resident
-		uint16_t fileNameAttributeOffset = fileNameAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER + g_BYTES_PER_ATTRIBUTE_RESIDENT_DATA;
-		uint8_t nameStringSize = mftEntryBuffer[fileNameAttributeOffset + 0x40]; //retrieve the amount of wide characters in the name
-		wchar_t* name = calloc(nameStringSize + 1, 2); //add 1 to nameStringSize for the null terminator, each wide character consists of two bytes
-		memcpy(name, mftEntryBuffer + fileNameAttributeOffset + 0x42, nameStringSize * 2);
-		return name;
-	}
-	else {
-		//to be continued...
-	}
-	return 0;
-}
-
-
-uint64_t getFileSize(byte* mftEntryBuffer) {
-	uint16_t dataAttributeHeaderOffset = findAttributeHeaderOffset(mftEntryBuffer, g_DATA_ATTRIBUTE_TYPECODE);
-	if (dataAttributeHeaderOffset == 0) { //if there is no $DATA attribute in the MFT entry
-		return 0; 
-	}
-
-	uint64_t fileSize = 0;
-	if (isResident(mftEntryBuffer, dataAttributeHeaderOffset)) { //if the actual attribute is resident
-		printf("[!] Error: The $MFT file has to be non-resident. Something is wrong!"); //the $DATA attribute of $MFT contains the content of the $MFT file, which is bigger than a single MFT entry
-	}
-	else { //if the actual attribute is non-resident flag is set (meaning NONRESIDENT_FORM)
-		uint16_t dataAttributeNonResidentDataOffset = dataAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER; //arrive to the attribute non-resident data
-		memcpy(&fileSize, mftEntryBuffer + dataAttributeNonResidentDataOffset + 0x20, 8); //note: this is the valid data size 
-	}
-	return fileSize;
-}
-
-
-void printAllDeletedFiles(HANDLE hVolume) {
+void printAllDeletedFiles(HANDLE hDrive) {
 	byte* mftEntryBuffer = malloc(g_lBytesPerMFTEntry);
-	if (ReadFileWrapper(hVolume, mftEntryBuffer, g_lBytesPerMFTEntry, "Couldn't read MFT entry") == 0) { //read the first entry of the MFT, which is the entry for $MFT
+	if (ReadFileWrapper(hDrive, mftEntryBuffer, g_lBytesPerMFTEntry, "Couldn't read MFT entry") == 0) { //read the first entry of the MFT, which is the entry for $MFT
 		return;
 	}
 
-	uint64_t mftFileSize = getFileSize(mftEntryBuffer); //get the size of the $MFT file
+	uint64_t mftFileSize = getFileValidDataSize(mftEntryBuffer); //get the size of the $MFT file
 	uint64_t amountOfMFTEntries = mftFileSize / g_lBytesPerMFTEntry; //calculate the size of the $MFT file
 	printf("The size of the $MFT file is %llu bytes, which means it has %llu entries.\r\n", mftFileSize, amountOfMFTEntries);
 
-	//---------------------------
-	printf("Data Run of $DATA attribute of %MFT:\r\n");
-	DataRunsList* dataRunsListOfDataAttributOfMFT = parseDataRuns(mftEntryBuffer, findAttributeHeaderOffset(mftEntryBuffer, g_DATA_ATTRIBUTE_TYPECODE));
-	DataRunListNode* dataRunListNode = dataRunsListOfDataAttributOfMFT->first;
-	while (dataRunListNode != NULL) {
-		printf("0x%X clusters start in cluster number 0x%016llX\r\n", dataRunListNode->numberOfClusters, dataRunListNode->numberOfStartingCluster);
-		dataRunListNode = dataRunListNode->next;
-
-	}
-	//---------------------------
-
 	int mftEntryNumber = 0; //MFT entry number zero is the entry of $MFT
 
-	
-	dataRunListNode = dataRunsListOfDataAttributOfMFT->first;
+	DataRunsList* dataRunsListOfDataAttributOfMFT = parseDataRuns(mftEntryBuffer, findAttributeHeaderOffset(mftEntryBuffer, g_DATA_ATTRIBUTE_TYPECODE));
+
+	DataRunListNode* dataRunListNode = dataRunsListOfDataAttributOfMFT->first;
 	//move through the data runs 
 	while (dataRunListNode != NULL) {
 		uint64_t startingAddressOfCurrentDataRun = dataRunListNode->numberOfStartingCluster * g_lBytesPerCluster; //calculate the starting address of the corresponding data run
-		if (SetFilePointerExWrapper(hVolume, startingAddressOfCurrentDataRun, "Couldn't jump to the location of the data run of $MFT") == 0) {
+		if (SetFilePointerExWrapper(hDrive, startingAddressOfCurrentDataRun, "Couldn't jump to the location of the data run of $MFT") == 0) {
 			return 0;
 		}
 
 		for (int i = 0; i < dataRunListNode->numberOfClusters * (g_lBytesPerCluster / g_lBytesPerMFTEntry); i++) { //read all the MFT entries of the current data run
 
 			if (mftEntryNumber < amountOfMFTEntries) {
-				if (ReadFileWrapper(hVolume, mftEntryBuffer, g_lBytesPerMFTEntry, "Couldn't read MFT entry") == 0) {
+				if (ReadFileWrapper(hDrive, mftEntryBuffer, g_lBytesPerMFTEntry, "Couldn't read MFT entry") == 0) {
 					return;
 				}
 
@@ -156,8 +108,8 @@ void printAllDeletedFiles(HANDLE hVolume) {
 
 
 int main() {
-	//get the size of sector and cluster in c: volume
-	if (GetDiskFreeSpaceAWrapper("\\\\.\\C:\\", (LPDWORD)&g_lSectorsPerCluster, (LPDWORD)&g_lBytesPerSector, "Couldn't retrieve information about C: volume") == 0) {
+	//get the size of sector and cluster in the drive
+	if (GetDiskFreeSpaceAWrapper("\\\\.\\D:\\", (LPDWORD)&g_lSectorsPerCluster, (LPDWORD)&g_lBytesPerSector, "Couldn't retrieve information about D: drive") == 0) {
 		return 1;
 	}
 
@@ -165,20 +117,20 @@ int main() {
 	printf("Sector size is %ld bytes.\r\n", g_lBytesPerSector);
 	printf("Cluster is %ld sectors = %ld bytes.\r\n\r\n", g_lSectorsPerCluster, g_lBytesPerCluster);
 
-	printf("[*] Opening C: volume ...\r\n");
-	HANDLE hVolume = CreateFileWWrapper(L"\\\\.\\C:", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_SYSTEM, "Couldn't open C: volume");
-	if (hVolume == INVALID_HANDLE_VALUE) {
+	printf("[*] Opening D: drive ...\r\n");
+	HANDLE hDrive = CreateFileWWrapper(L"\\\\.\\D:", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_SYSTEM, "Couldn't open D: drive");
+	if (hDrive == INVALID_HANDLE_VALUE) {
 		return 1;
 	}
 
-	if (MoveVolumePointerToMFT(hVolume) == 0) {
+	if (MoveDrivePointerToMFT(hDrive) == 0) {
 		return 1;
 	}
 
-	printAllDeletedFiles(hVolume);
+	printAllDeletedFiles(hDrive);
 
-	printf("[*] Closing C: volume handle...\r\n");
-	if (CloseHandleWrapper(hVolume, "Couldn't close the handle of C: volume") == 0) {
+	printf("[*] Closing D: drive handle...\r\n");
+	if (CloseHandleWrapper(hDrive, "Couldn't close the handle of D: drive") == 0) {
 		return 1;
 	}
 

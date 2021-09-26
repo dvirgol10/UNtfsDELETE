@@ -38,6 +38,17 @@ BOOL ReadFileWrapper(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, 
 
 
 //return 1 if everything is good, otherwise return 0
+BOOL WriteFileWrapper(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite, char* errorMessage) {
+	DWORD junk = 1337;
+	if (WriteFile(hFile, lpBuffer, nNumberOfBytesToWrite, (LPDWORD)&junk, NULL) == 0) {
+		printErrorMessage(errorMessage, "WriteFile");
+		return 0;
+	}
+	return 1;
+}
+
+
+//return 1 if everything is good, otherwise return 0
 BOOL SetFilePointerExWrapper(HANDLE hFile, LONGLONG lDistanceToMove, char* errorMessage) {
 	LARGE_INTEGER liDistanceToMove = { 0 };
 	liDistanceToMove.QuadPart = lDistanceToMove;
