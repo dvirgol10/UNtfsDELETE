@@ -103,3 +103,15 @@ DataRunsList* parseDataRuns(byte* mftEntryBuffer, uint16_t attributeHeaderOffset
 
 	return dataRunList;
 }
+
+
+void freeDataRunsList(DataRunsList* dataRunsList) {
+	DataRunListNode* dataRunListNode = dataRunsList->first;
+
+	while (dataRunListNode != NULL) {
+		DataRunListNode* tmp = dataRunListNode;
+		dataRunListNode = dataRunListNode->next;
+		free(tmp);
+	}
+	free(dataRunsList);
+}

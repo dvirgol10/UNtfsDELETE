@@ -1,13 +1,16 @@
 #ifndef MAIN_H
 #define MAIN_H
 
+
 #include "dataRunsParser.h"
 
 #include <Windows.h>
 #include <stdint.h>
 
 
-const uint64_t rootFileMftEntryIndex = 5;
+const uint64_t ROOT_FILE_MFT_ENTRY_INDEX = 5;
+
+extern HANDLE hDrive = 0;
 
 DWORD g_lSectorsPerCluster = 0;
 DWORD g_lBytesPerSector = 0;
@@ -34,18 +37,20 @@ typedef struct DeletedFileListNode {
 typedef struct DeletedFilesList {
 	DeletedFileListNode* first;
 	DeletedFileListNode* last;
+	DataRunsList* dataRunsListOfDataAttributOfMFT;
 
 } DeletedFilesList;
 
 
-int moveDrivePointerToMft(HANDLE hDrive);
+int moveDrivePointerToMft();
 BOOL isValidMftEntry(byte* mftEntryBuffer);
 BOOL isDeletedFile(byte* mftEntryBuffer);
 uint64_t getParentFileMftEntryIndex(byte* mftEntryBuffer);
-byte* getMftEntryBufferOfIndex(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, uint64_t mftEntryIndex);
-wchar_t* getFilePath(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, byte* mftEntryBuffer);
-void insertDeletedFileToList(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, DeletedFilesList* deletedFilesList, byte* mftEntryBuffer, uint64_t mftEntryIndex);
-DeletedFilesList* listAllDeletedFiles(HANDLE hDrive);
-
+byte* getMftEntryBufferOfIndex(DataRunsList* dataRunsListOfMftFile, uint64_t mftEntryIndex);
+wchar_t* getFilePath(DataRunsList* dataRunsListOfMftFile, byte* mftEntryBuffer);
+void insertDeletedFileToList(DeletedFilesList* deletedFilesList, byte* mftEntryBuffer, uint64_t mftEntryIndex);
+DeletedFilesList* listAllDeletedFiles();
+void freeDirectoriesPathList(DirectoriesPathList* directoriesPathList);
+void freeDeletedFilesList(DeletedFilesList* deletedFilesList);
 
 #endif

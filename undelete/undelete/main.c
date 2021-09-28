@@ -3,6 +3,7 @@
 #include "win32apiWrapper.h"
 #include "mftAttributes.h"
 #include "recover.h"
+#include "dataRunsParser.h"
 
 #include <stdio.h>
 
@@ -17,7 +18,7 @@ extern const uint32_t g_DATA_ATTRIBUTE_TYPECODE;
 
 //move the file pointer of the drive to the location of the starting sector of the MFT.
 //return 1 if everything is good, otherwise return 0
-int moveDrivePointerToMft(HANDLE hDrive) {
+int moveDrivePointerToMft() {
 	printf("[*] Reading the VBR ...\r\n");
 	byte* lpBuffer = malloc(g_lBytesPerSector);
 	if (ReadFileWrapper(hDrive, lpBuffer, g_lBytesPerSector, "Couldn't read the VBR") == 0) { //when reading from a disk drive, the maximum number of bytes to be read has to be a multiple of sector size
@@ -25,9 +26,9 @@ int moveDrivePointerToMft(HANDLE hDrive) {
 	}
 
 	g_lBytesPerMftEntry = 1 << (-(signed char)(lpBuffer[0x40])); //calculate the size in bytes of each MFT entry
-	printf("\r\nAn MFT entry size is %ld bytes.\r\n\r\n", g_lBytesPerMftEntry);
+	//printf("\r\nAn MFT entry size is %ld bytes.\r\n\r\n", g_lBytesPerMftEntry);
 
-	printf("[*] Jumping to the location of the starting sector of the MFT"); 
+	printf("[*] Jumping to the location of the starting sector of the MFT");
 	//calculate the first MFT cluster number, then multiply it by cluster size in bytes
 	LONGLONG lDistanceToMove = 0;
 	memcpy(&lDistanceToMove, lpBuffer + 0x30, 8);
@@ -45,7 +46,7 @@ int moveDrivePointerToMft(HANDLE hDrive) {
 
 //check the signature of the MFT entry to determine whether it is a valid entry or not (0x46494c45 = "FILE")
 BOOL isValidMftEntry(byte* mftEntryBuffer) {
-	return mftEntryBuffer[0x0] == 0x46 && mftEntryBuffer[0x1] == 0x49 && mftEntryBuffer[0x2] == 0x4c && mftEntryBuffer[0x3] == 0x45; 
+	return mftEntryBuffer[0x0] == 0x46 && mftEntryBuffer[0x1] == 0x49 && mftEntryBuffer[0x2] == 0x4c && mftEntryBuffer[0x3] == 0x45;
 }
 
 
@@ -68,14 +69,16 @@ uint64_t getParentFileMftEntryIndex(byte* mftEntryBuffer) {
 		memcpy(&parentFileMftEntryIndex, mftEntryBuffer + fileNameAttributeOffset, 6); //retrieve the MFT entry index of the parent file
 	}
 	else {
-		//to be continued...
+		byte* firstClusterOfFileNameAttribute = getFirstClusterOfNonResidentAttribute(mftEntryBuffer, fileNameAttributeHeaderOffset);
+		memcpy(&parentFileMftEntryIndex, firstClusterOfFileNameAttribute, 6);
+		free(firstClusterOfFileNameAttribute);
 	}
 	return parentFileMftEntryIndex;
 }
 
 
 //return the mft entry which its index is mftEntryIndex
-byte* getMftEntryBufferOfIndex(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, uint64_t mftEntryIndex) {
+byte* getMftEntryBufferOfIndex(DataRunsList* dataRunsListOfMftFile, uint64_t mftEntryIndex) {
 	uint32_t numberOfMftEntries = 0;
 	DataRunListNode* dataRunListNode = dataRunsListOfMftFile->first;
 	while (mftEntryIndex >= numberOfMftEntries + dataRunListNode->numberOfClusters * (g_lBytesPerCluster / g_lBytesPerMftEntry)) {
@@ -95,7 +98,7 @@ byte* getMftEntryBufferOfIndex(HANDLE hDrive, DataRunsList* dataRunsListOfMftFil
 
 
 //return the path of the file that is represented in mftEntryBuffer
-wchar_t* getFilePath(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, byte* mftEntryBuffer) {
+wchar_t* getFilePath(DataRunsList* dataRunsListOfMftFile, byte* mftEntryBuffer) {
 	LONGLONG currentFilePointerLocation = getCurrentFilePointerLocation(hDrive, "Couldn't get the current file pointer location"); //we need the current file pointer location in order to set it back in the end of the path resolving
 
 	//put each part of the file's path in a linked linked list
@@ -112,9 +115,9 @@ wchar_t* getFilePath(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, byte* m
 	if (parentFileMftEntryIndex == 0) {
 		return 0;
 	}
-	while (parentFileMftEntryIndex != rootFileMftEntryIndex) { //while the parent directory isn't root
-		byte* parentFileMftEntry = getMftEntryBufferOfIndex(hDrive, dataRunsListOfMftFile, parentFileMftEntryIndex);
-		
+	while (parentFileMftEntryIndex != ROOT_FILE_MFT_ENTRY_INDEX) { //while the parent directory isn't root
+		byte* parentFileMftEntry = getMftEntryBufferOfIndex(dataRunsListOfMftFile, parentFileMftEntryIndex);
+
 		nameString = getName(parentFileMftEntry);
 		if (nameString == 0) {
 			return 0;
@@ -155,17 +158,19 @@ wchar_t* getFilePath(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, byte* m
 		wcscat_s(path, pathLength, parentDirectoryListNode->nameString);
 		parentDirectoryListNode = parentDirectoryListNode->next;
 	}
-	
+
+	freeDirectoriesPathList(directoriesPathList);
+
 	return path;
 }
 
 
 //insert the deleted file to the end of linked list of the deleted files
-void insertDeletedFileToList(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, DeletedFilesList* deletedFilesList, byte* mftEntryBuffer, uint64_t mftEntryIndex) {
-	wchar_t* deletedFilePath = getFilePath(hDrive, dataRunsListOfMftFile, mftEntryBuffer);
+void insertDeletedFileToList(DeletedFilesList* deletedFilesList, byte* mftEntryBuffer, uint64_t mftEntryIndex) {
+	wchar_t* deletedFilePath = getFilePath(deletedFilesList->dataRunsListOfDataAttributOfMFT, mftEntryBuffer);
 	if (deletedFilePath != 0) { //if valid file path
 		DeletedFileListNode* deletedFileListNode = malloc(sizeof(DeletedFileListNode));
-		*deletedFileListNode = (DeletedFileListNode){ NULL, mftEntryIndex, getFilePath(hDrive, dataRunsListOfMftFile, mftEntryBuffer) };
+		*deletedFileListNode = (DeletedFileListNode){ NULL, mftEntryIndex, deletedFilePath };
 		if (deletedFilesList->first == NULL && deletedFilesList->last == NULL) { //if this is the first deleted file
 			deletedFilesList->first = deletedFileListNode;
 		}
@@ -179,7 +184,7 @@ void insertDeletedFileToList(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile,
 
 
 //create a linked list of all of the deleted files that are still in the $MFT file
-DeletedFilesList* listAllDeletedFiles(HANDLE hDrive) {
+DeletedFilesList* listAllDeletedFiles() {
 	byte* mftEntryBuffer = malloc(g_lBytesPerMftEntry);
 	if (ReadFileWrapper(hDrive, mftEntryBuffer, g_lBytesPerMftEntry, "Couldn't read MFT entry") == 0) { //read the first entry of the MFT, which is the entry for $MFT
 		return;
@@ -187,14 +192,14 @@ DeletedFilesList* listAllDeletedFiles(HANDLE hDrive) {
 
 	uint64_t mftFileSize = getFileValidDataSize(mftEntryBuffer); //get the size of the $MFT file
 	uint64_t amountOfMFTEntries = mftFileSize / g_lBytesPerMftEntry; //calculate the size of the $MFT file
-	printf("The size of the $MFT file is %llu bytes, which means it has %llu entries.\r\n", mftFileSize, amountOfMFTEntries);
+	//printf("The size of the $MFT file is %llu bytes, which means it has %llu entries.\r\n", mftFileSize, amountOfMFTEntries);
 
 	int mftEntryNumber = 0; //MFT entry number zero is the entry of $MFT
 
 	DataRunsList* dataRunsListOfDataAttributOfMFT = parseDataRuns(mftEntryBuffer, findAttributeHeaderOffset(mftEntryBuffer, g_DATA_ATTRIBUTE_TYPECODE));
 
-	DeletedFilesList* deletedFilesList = malloc(sizeof(deletedFilesList));
-	*deletedFilesList = (DeletedFilesList) {NULL, NULL};
+	DeletedFilesList* deletedFilesList = malloc(sizeof(DeletedFilesList));
+	*deletedFilesList = (DeletedFilesList){ NULL, NULL, dataRunsListOfDataAttributOfMFT };
 
 	DataRunListNode* dataRunListNode = dataRunsListOfDataAttributOfMFT->first;
 	//move through the data runs 
@@ -216,7 +221,7 @@ DeletedFilesList* listAllDeletedFiles(HANDLE hDrive) {
 						wchar_t* deletedFileName = getName(mftEntryBuffer);
 						if (deletedFileName != 0) { //if the deleted file has a name
 							free(deletedFileName);
-							insertDeletedFileToList(hDrive, dataRunsListOfDataAttributOfMFT, deletedFilesList, mftEntryBuffer, mftEntryNumber);
+							insertDeletedFileToList(deletedFilesList, mftEntryBuffer, mftEntryNumber);
 						}
 					}
 				}
@@ -235,6 +240,38 @@ DeletedFilesList* listAllDeletedFiles(HANDLE hDrive) {
 }
 
 
+void freeDirectoriesPathList(DirectoriesPathList* directoriesPathList) {
+	ParentDirectoryListNode* parentDirectoryListNode = directoriesPathList->first;
+
+	//this is not in the while loop because we don't have to "free(tmp->nameString)" for the first node
+	ParentDirectoryListNode* tmp = parentDirectoryListNode;
+	parentDirectoryListNode = parentDirectoryListNode->next;
+	free(tmp);
+
+	while (parentDirectoryListNode != NULL) {
+		ParentDirectoryListNode* tmp = parentDirectoryListNode;
+		parentDirectoryListNode = parentDirectoryListNode->next;
+		free(tmp->nameString);
+		free(tmp);
+	}
+	free(directoriesPathList);
+}
+
+
+void freeDeletedFilesList(DeletedFilesList* deletedFilesList) {
+	DeletedFileListNode* deletedFileListNode = deletedFilesList->first;
+
+	while (deletedFileListNode != NULL) {
+		DeletedFileListNode* tmp = deletedFileListNode;
+		deletedFileListNode = deletedFileListNode->next;
+		free(tmp->path);
+		free(tmp);
+	}
+	freeDataRunsList(deletedFilesList->dataRunsListOfDataAttributOfMFT);
+	free(deletedFilesList);
+}
+
+
 int main() {
 	//get the size of sector and cluster in the drive
 	if (GetDiskFreeSpaceAWrapper("\\\\.\\D:\\", (LPDWORD)&g_lSectorsPerCluster, (LPDWORD)&g_lBytesPerSector, "Couldn't retrieve information about D: drive") == 0) {
@@ -242,27 +279,57 @@ int main() {
 	}
 
 	g_lBytesPerCluster = g_lSectorsPerCluster * g_lBytesPerSector;
-	printf("Sector size is %ld bytes.\r\n", g_lBytesPerSector);
-	printf("Cluster is %ld sectors = %ld bytes.\r\n\r\n", g_lSectorsPerCluster, g_lBytesPerCluster);
+	//printf("Sector size is %ld bytes.\r\n", g_lBytesPerSector);
+	//printf("Cluster is %ld sectors = %ld bytes.\r\n\r\n", g_lSectorsPerCluster, g_lBytesPerCluster);
 
 	printf("[*] Opening D: drive ...\r\n");
-	HANDLE hDrive = CreateFileWWrapper(L"\\\\.\\D:", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_SYSTEM, "Couldn't open D: drive");
+	hDrive = CreateFileWWrapper(L"\\\\.\\D:", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_SYSTEM, "Couldn't open D: drive");
 	if (hDrive == INVALID_HANDLE_VALUE) {
 		return 1;
 	}
 
-	if (moveDrivePointerToMft(hDrive) == 0) {
+	if (moveDrivePointerToMft() == 0) {
 		return 1;
 	}
 
-	DeletedFilesList* deletedFilesList = listAllDeletedFiles(hDrive);
+	printf("[*] Looking for deleted files ...\r\n");
+	DeletedFilesList* deletedFilesList = listAllDeletedFiles();
+
+	wchar_t* absolutePathToDeletedFile = calloc(1024, 2);
+	printf("Enter the absolute path of the deleted file to recover: ");
+	_getws_s(absolutePathToDeletedFile, 1024);
+
+	char* pathToFolderOfRecoveredFile = calloc(1024, 1);
+	printf("Enter the path of the folder of the new recovered file: ");
+	gets_s(pathToFolderOfRecoveredFile, 1024);
+
+
+	printf("[*] Searching the file ...\r\n");
+	BOOL found = FALSE;
 	DeletedFileListNode* deletedFileListNode = deletedFilesList->first;
 	while (deletedFileListNode != NULL) {
-		printf("MFT entry number %d (offset 0x%08x) of file \"%ws\" is marked as deleted.\r\n", deletedFileListNode->mftEntryIndex, deletedFileListNode->mftEntryIndex * g_lBytesPerMftEntry, deletedFileListNode->path);
+		if (wcscmp(absolutePathToDeletedFile, deletedFileListNode->path) == 0) {
+			byte* mftEntryBuffer = getMftEntryBufferOfIndex(deletedFilesList->dataRunsListOfDataAttributOfMFT, deletedFileListNode->mftEntryIndex);
+			recoverFileFromMftEntry(mftEntryBuffer, pathToFolderOfRecoveredFile);
+			free(mftEntryBuffer);
+			found = TRUE;
+			break;
+		}
 		deletedFileListNode = deletedFileListNode->next;
 	}
 
-	printf("\r\n[*] Closing D: drive handle...\r\n");
+	if (found) {
+		printf("[*] The file has been recovered successfully!\r\n");
+	}
+	else {
+		printf("[!] The file isn't in the MFT\r\n");
+	}
+
+	free(absolutePathToDeletedFile);
+	free(pathToFolderOfRecoveredFile);
+	freeDeletedFilesList(deletedFilesList);
+
+	printf("[*] Closing D: drive handle...\r\n");
 	if (CloseHandleWrapper(hDrive, "Couldn't close the handle of D: drive") == 0) {
 		return 1;
 	}

@@ -5,7 +5,7 @@ extern const DWORD g_BYTES_PER_ATTRIBUTE_HEADER;
 extern const uint32_t g_DATA_ATTRIBUTE_TYPECODE;
 
 extern DWORD g_lBytesPerCluster;
-
+extern HANDLE hDrive;
 
 //convert an ASCII string to wide character string
 wchar_t* strToWcs(char* str) {
@@ -40,6 +40,7 @@ wchar_t* getNewRecoveredFilePath(byte* mftEntryBuffer, char* pathToDirectoryOfNe
 	wcscat_s(newRecoveredFilePath, newRecoveredFilePathLength, fileName);
 	
 	free(pathToDirectoryOfNewRecoveredFileWCS);
+	free(fileName);
 
 	return newRecoveredFilePath;
 }
@@ -57,7 +58,7 @@ LONGLONG getCurrentFilePointerLocation(HANDLE hFile, char* errorMessage) {
 }
 
 
-void recoverFileFromMftEntry(HANDLE hDrive, byte* mftEntryBuffer, char* pathToDirectoryOfNewRecoveredFile) {
+void recoverFileFromMftEntry(byte* mftEntryBuffer, char* pathToDirectoryOfNewRecoveredFile) {
 	if (!isDirectory(pathToDirectoryOfNewRecoveredFile)) {
 		printf("[!] \"%s\" is not a valid directory!\r\n", pathToDirectoryOfNewRecoveredFile);
 		return;
@@ -115,7 +116,8 @@ void recoverFileFromMftEntry(HANDLE hDrive, byte* mftEntryBuffer, char* pathToDi
 
 			dataRunListNode = dataRunListNode->next; //advance in the linked list
 		}
-
+		free(dataBuffer);
+		freeDataRunsList(dataRunsListOfDataAttributOfMFT);
 		SetFilePointerExWrapper(hDrive, currentFilePointerLocation, "Couldn't set back the file pointer location");
 	}
 

@@ -12,7 +12,7 @@ wchar_t* strToWcs(char* str);
 BOOL isDirectory(char* path);
 wchar_t* getNewRecoveredFilePath(byte* mftEntryBuffer, char* pathToDirectoryOfNewRecoveredFile);
 LONGLONG getCurrentFilePointerLocation(HANDLE hFile, char* errorMessage);
-void recoverFileFromMftEntry(HANDLE hDrive, byte* mftEntryBuffer, char* pathToDirectoryOfNewRecoveredFile);
+void recoverFileFromMftEntry(byte* mftEntryBuffer, char* pathToDirectoryOfNewRecoveredFile);
 
 
 #endif

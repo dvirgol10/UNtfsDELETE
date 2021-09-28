@@ -9,6 +9,9 @@ extern const uint32_t g_FILE_NAME_ATTRIBUTE_TYPECODE = 0x00000030;
 extern const uint32_t g_DATA_ATTRIBUTE_TYPECODE = 0x00000080;
 extern const uint32_t g_END_OF_ATTRIBUTE_MARKER = 0xFFFFFFFF;
 
+extern HANDLE hDrive;
+
+extern DWORD g_lBytesPerCluster;
 
 //return the offset (relative from the start of the start of the MFT entry) of the starting of the first attribute header that has type code attributeTypeCode
 //if the is no attribute with type code attributeTypeCode in the MFT entry, return 0
@@ -40,6 +43,23 @@ BOOL isResident(byte* mftEntryBuffer, uint16_t attributeHeaderOffset) {
 }
 
 
+//return the first cluster of the data of a non-resident attribute
+byte* getFirstClusterOfNonResidentAttribute(byte* mftEntryBuffer, uint16_t attributeHeaderOffset) {
+	DataRunsList* dataRunsList = parseDataRuns(mftEntryBuffer, attributeHeaderOffset);
+	
+	LONGLONG currentFilePointerLocation = getCurrentFilePointerLocation(hDrive, "Couldn't get the current file pointer location"); //we need the current file pointer location in order to set it back in the end of the recovering
+
+	byte* firstCluster = malloc(g_lBytesPerCluster);
+	SetFilePointerExWrapper(hDrive, dataRunsList->first->numberOfStartingCluster * g_lBytesPerCluster, "Couldn't set back the file pointer location");
+	ReadFileWrapper(hDrive, firstCluster, g_lBytesPerCluster, "Couldn't read the first cluster of a non-resident attribute");
+
+	freeDataRunsList(dataRunsList);
+
+	SetFilePointerExWrapper(hDrive, currentFilePointerLocation, "Couldn't set back the file pointer location");
+
+	return firstCluster;
+}
+
 //return the file attribute flags that are stored in $STANDARD_INFORMATION attribute
 uint32_t getFileAttributeFlags(byte* mftEntryBuffer) {
 	uint16_t standardInformationAttributeHeaderOffset = findAttributeHeaderOffset(mftEntryBuffer, g_STANDARD_INFORMATION_ATTRIBUTE_TYPECODE);
@@ -47,40 +67,50 @@ uint32_t getFileAttributeFlags(byte* mftEntryBuffer) {
 		return 0;
 	}
 
+	uint32_t fileAttributeFlags = 0;
 	if (isResident(mftEntryBuffer, standardInformationAttributeHeaderOffset)) { //if the actual attribute is resident
 		uint16_t standardInformationAttributeOffset = standardInformationAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER + g_BYTES_PER_ATTRIBUTE_RESIDENT_DATA;
-		uint32_t fileAttributeFlags = 0;
 		memcpy(&fileAttributeFlags, mftEntryBuffer + standardInformationAttributeOffset + 0x20, 4);
-		return fileAttributeFlags;
 	}
 	else {
-		//to be continued...
+		byte* firstClusterOfStandardInformationAttribute = getFirstClusterOfNonResidentAttribute(mftEntryBuffer, standardInformationAttributeHeaderOffset);
+		memcpy(&fileAttributeFlags, firstClusterOfStandardInformationAttribute + 0x20, 4);
+		free(firstClusterOfStandardInformationAttribute);
 	}
-	return 0;
+	return fileAttributeFlags;
 }
 
 
-//TODO: deal also with long names (a MFT entry with multiple $FILE_NAME attributes)
+//TODO: deal also with a MFT entry with multiple $FILE_NAME attributes)
 wchar_t* getName(byte* mftEntryBuffer) {
 	uint16_t fileNameAttributeHeaderOffset = findAttributeHeaderOffset(mftEntryBuffer, g_FILE_NAME_ATTRIBUTE_TYPECODE);
 	if (fileNameAttributeHeaderOffset == 0) { //if there is no $FILE_NAME attribute in the MFT entry
 		return 0;
 	}
 
+	uint8_t nameStringSize = 0;
+	wchar_t* name = 0;
 	if (isResident(mftEntryBuffer, fileNameAttributeHeaderOffset)) { //if the actual attribute is resident
 		uint16_t fileNameAttributeOffset = fileNameAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER + g_BYTES_PER_ATTRIBUTE_RESIDENT_DATA;
-		uint8_t nameStringSize = mftEntryBuffer[fileNameAttributeOffset + 0x40]; //retrieve the amount of wide characters in the name
+		nameStringSize = mftEntryBuffer[fileNameAttributeOffset + 0x40]; //retrieve the amount of wide characters in the name
 		if (nameStringSize == 0) {
 			return 0;
 		}
-		wchar_t* name = calloc(nameStringSize + 1, 2); //add 1 to nameStringSize for the null terminator, each wide character consists of two bytes
+		name = calloc(nameStringSize + 1, 2); //add 1 to nameStringSize for the null terminator, each wide character consists of two bytes
 		memcpy(name, mftEntryBuffer + fileNameAttributeOffset + 0x42, nameStringSize * 2);
-		return name;
 	}
 	else {
-		//to be continued...
+		byte* firstClusterOfFileNameAttribute = getFirstClusterOfNonResidentAttribute(mftEntryBuffer, fileNameAttributeHeaderOffset);
+		nameStringSize = firstClusterOfFileNameAttribute[0x40]; //retrieve the amount of wide characters in the name
+		if (nameStringSize == 0) {
+			return 0;
+		}
+		name = calloc(nameStringSize + 1, 2); //add 1 to nameStringSize for the null terminator, each wide character consists of two bytes
+		memcpy(name, firstClusterOfFileNameAttribute + 0x42, nameStringSize * 2);
+		free(firstClusterOfFileNameAttribute);
 	}
-	return 0;
+	return name;
+
 }
 
 
@@ -93,8 +123,8 @@ uint64_t getFileValidDataSize(byte* mftEntryBuffer) {
 
 	uint64_t fileSize = 0;
 	if (isResident(mftEntryBuffer, dataAttributeHeaderOffset)) { //if the actual attribute is resident
-		uint16_t dataAttributeNonResidentDataOffset = dataAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER; //arrive to the attribute resident data
-		memcpy(&fileSize, mftEntryBuffer + dataAttributeNonResidentDataOffset, 4); //note: this is the valid data size 
+		uint16_t dataAttributeResidentDataOffset = dataAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER; //arrive to the attribute resident data
+		memcpy(&fileSize, mftEntryBuffer + dataAttributeResidentDataOffset, 4); //note: this is the valid data size 
 	}
 	else { //if the actual attribute is non-resident flag is set (meaning NONRESIDENT_FORM)
 		uint16_t dataAttributeNonResidentDataOffset = dataAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER; //arrive to the attribute non-resident data

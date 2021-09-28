@@ -27,5 +27,6 @@ BOOL isSigned(int64_t number, uint64_t numberSizeInBytes);
 void convertTo64BitSignedInteger(int64_t* number, uint64_t numberSizeInBytes);
 void addToDataRunList(DataRunsList* dataRunList, uint64_t numberOfClusters, int64_t relativeNumberOfStartingCluster);
 DataRunsList* parseDataRuns(byte* mftEntryBuffer, uint16_t attributeHeaderOffset);
+void freeDataRunsList(DataRunsList* dataRunsList);
 
 #endif
