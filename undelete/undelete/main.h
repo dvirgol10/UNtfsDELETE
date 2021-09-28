@@ -25,6 +25,18 @@ typedef struct DirectoriesPathList {
 	ParentDirectoryListNode* first;
 } DirectoriesPathList;
 
+typedef struct DeletedFileListNode {
+	struct DeletedFileListNode* next;
+	uint64_t mftEntryIndex;
+	wchar_t* path;
+} DeletedFileListNode;
+
+typedef struct DeletedFilesList {
+	DeletedFileListNode* first;
+	DeletedFileListNode* last;
+
+} DeletedFilesList;
+
 
 int moveDrivePointerToMft(HANDLE hDrive);
 BOOL isValidMftEntry(byte* mftEntryBuffer);
@@ -32,6 +44,8 @@ BOOL isDeletedFile(byte* mftEntryBuffer);
 uint64_t getParentFileMftEntryIndex(byte* mftEntryBuffer);
 byte* getMftEntryBufferOfIndex(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, uint64_t mftEntryIndex);
 wchar_t* getFilePath(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, byte* mftEntryBuffer);
-void printAllDeletedFiles(HANDLE hDrive);
+void insertDeletedFileToList(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, DeletedFilesList* deletedFilesList, byte* mftEntryBuffer, uint64_t mftEntryIndex);
+DeletedFilesList* listAllDeletedFiles(HANDLE hDrive);
+
 
 #endif

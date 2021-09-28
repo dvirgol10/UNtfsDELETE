@@ -101,6 +101,9 @@ wchar_t* getFilePath(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, byte* m
 	//put each part of the file's path in a linked linked list
 	DirectoriesPathList* directoriesPathList = (DirectoriesPathList*)malloc(sizeof(DirectoriesPathList));
 	wchar_t* nameString = getName(mftEntryBuffer);
+	if (nameString == 0) {
+		return 0;
+	}
 	ParentDirectoryListNode* parentDirectoryListNode = (ParentDirectoryListNode*)malloc(sizeof(ParentDirectoryListNode));
 	*parentDirectoryListNode = (ParentDirectoryListNode){ NULL, nameString, wcslen(nameString) + 1 }; //"wcslen(nameString)" doesn't include the null terminator bytes
 	*directoriesPathList = (DirectoriesPathList){ parentDirectoryListNode };
@@ -113,6 +116,9 @@ wchar_t* getFilePath(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, byte* m
 		byte* parentFileMftEntry = getMftEntryBufferOfIndex(hDrive, dataRunsListOfMftFile, parentFileMftEntryIndex);
 		
 		nameString = getName(parentFileMftEntry);
+		if (nameString == 0) {
+			return 0;
+		}
 		parentDirectoryListNode = (ParentDirectoryListNode*)malloc(sizeof(ParentDirectoryListNode));
 		//insert the node to the start of linked list, because the we are resolving the path backwards
 		*parentDirectoryListNode = (ParentDirectoryListNode){ directoriesPathList->first, nameString, wcslen(nameString) + 1 }; //the "+ 1" in "(wcslen(nameString) + 1" is for the (wide) character L"\\"
@@ -154,7 +160,26 @@ wchar_t* getFilePath(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, byte* m
 }
 
 
-void printAllDeletedFiles(HANDLE hDrive) {
+//insert the deleted file to the end of linked list of the deleted files
+void insertDeletedFileToList(HANDLE hDrive, DataRunsList* dataRunsListOfMftFile, DeletedFilesList* deletedFilesList, byte* mftEntryBuffer, uint64_t mftEntryIndex) {
+	wchar_t* deletedFilePath = getFilePath(hDrive, dataRunsListOfMftFile, mftEntryBuffer);
+	if (deletedFilePath != 0) { //if valid file path
+		DeletedFileListNode* deletedFileListNode = malloc(sizeof(DeletedFileListNode));
+		*deletedFileListNode = (DeletedFileListNode){ NULL, mftEntryIndex, getFilePath(hDrive, dataRunsListOfMftFile, mftEntryBuffer) };
+		if (deletedFilesList->first == NULL && deletedFilesList->last == NULL) { //if this is the first deleted file
+			deletedFilesList->first = deletedFileListNode;
+		}
+		else {
+			deletedFilesList->last->next = deletedFileListNode;
+		}
+		deletedFilesList->last = deletedFileListNode;
+	}
+
+}
+
+
+//create a linked list of all of the deleted files that are still in the $MFT file
+DeletedFilesList* listAllDeletedFiles(HANDLE hDrive) {
 	byte* mftEntryBuffer = malloc(g_lBytesPerMftEntry);
 	if (ReadFileWrapper(hDrive, mftEntryBuffer, g_lBytesPerMftEntry, "Couldn't read MFT entry") == 0) { //read the first entry of the MFT, which is the entry for $MFT
 		return;
@@ -167,6 +192,9 @@ void printAllDeletedFiles(HANDLE hDrive) {
 	int mftEntryNumber = 0; //MFT entry number zero is the entry of $MFT
 
 	DataRunsList* dataRunsListOfDataAttributOfMFT = parseDataRuns(mftEntryBuffer, findAttributeHeaderOffset(mftEntryBuffer, g_DATA_ATTRIBUTE_TYPECODE));
+
+	DeletedFilesList* deletedFilesList = malloc(sizeof(deletedFilesList));
+	*deletedFilesList = (DeletedFilesList) {NULL, NULL};
 
 	DataRunListNode* dataRunListNode = dataRunsListOfDataAttributOfMFT->first;
 	//move through the data runs 
@@ -186,13 +214,9 @@ void printAllDeletedFiles(HANDLE hDrive) {
 				if (isValidMftEntry(mftEntryBuffer)) {
 					if (isDeletedFile(mftEntryBuffer)) {
 						wchar_t* deletedFileName = getName(mftEntryBuffer);
-						if (deletedFileName != 0) {
+						if (deletedFileName != 0) { //if the deleted file has a name
 							free(deletedFileName);
-							wchar_t* deletedFilePath = getFilePath(hDrive, dataRunsListOfDataAttributOfMFT, mftEntryBuffer);
-							if (deletedFilePath != 0) { //if valid file name
-								printf("MFT entry number %d (offset 0x%08x) of file \"%ws\" is marked as deleted.\r\n", mftEntryNumber, mftEntryNumber * g_lBytesPerMftEntry, deletedFilePath);
-								free(deletedFilePath);
-							}
+							insertDeletedFileToList(hDrive, dataRunsListOfDataAttributOfMFT, deletedFilesList, mftEntryBuffer, mftEntryNumber);
 						}
 					}
 				}
@@ -206,6 +230,8 @@ void printAllDeletedFiles(HANDLE hDrive) {
 	}
 
 	free(mftEntryBuffer);
+
+	return deletedFilesList;
 }
 
 
@@ -229,9 +255,14 @@ int main() {
 		return 1;
 	}
 
-	printAllDeletedFiles(hDrive);
+	DeletedFilesList* deletedFilesList = listAllDeletedFiles(hDrive);
+	DeletedFileListNode* deletedFileListNode = deletedFilesList->first;
+	while (deletedFileListNode != NULL) {
+		printf("MFT entry number %d (offset 0x%08x) of file \"%ws\" is marked as deleted.\r\n", deletedFileListNode->mftEntryIndex, deletedFileListNode->mftEntryIndex * g_lBytesPerMftEntry, deletedFileListNode->path);
+		deletedFileListNode = deletedFileListNode->next;
+	}
 
-	printf("[*] Closing D: drive handle...\r\n");
+	printf("\r\n[*] Closing D: drive handle...\r\n");
 	if (CloseHandleWrapper(hDrive, "Couldn't close the handle of D: drive") == 0) {
 		return 1;
 	}

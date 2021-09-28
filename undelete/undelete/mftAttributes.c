@@ -70,6 +70,9 @@ wchar_t* getName(byte* mftEntryBuffer) {
 	if (isResident(mftEntryBuffer, fileNameAttributeHeaderOffset)) { //if the actual attribute is resident
 		uint16_t fileNameAttributeOffset = fileNameAttributeHeaderOffset + g_BYTES_PER_ATTRIBUTE_HEADER + g_BYTES_PER_ATTRIBUTE_RESIDENT_DATA;
 		uint8_t nameStringSize = mftEntryBuffer[fileNameAttributeOffset + 0x40]; //retrieve the amount of wide characters in the name
+		if (nameStringSize == 0) {
+			return 0;
+		}
 		wchar_t* name = calloc(nameStringSize + 1, 2); //add 1 to nameStringSize for the null terminator, each wide character consists of two bytes
 		memcpy(name, mftEntryBuffer + fileNameAttributeOffset + 0x42, nameStringSize * 2);
 		return name;
