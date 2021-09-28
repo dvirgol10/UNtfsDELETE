@@ -81,7 +81,7 @@ DataRunsList* parseDataRuns(byte* mftEntryBuffer, uint16_t attributeHeaderOffset
 	DataRunListNode* firstDataRunListNode = (DataRunListNode*)malloc(sizeof(DataRunListNode));
 	*firstDataRunListNode = (DataRunListNode){ 0, numberOfClusters, numberOfStartingCluster };
 	DataRunsList* dataRunList = (DataRunsList*)malloc(sizeof(DataRunsList));
-	*dataRunList = (DataRunsList){ firstDataRunListNode , firstDataRunListNode };
+	*dataRunList = (DataRunsList){ firstDataRunListNode, firstDataRunListNode };
 
 	uint8_t relativeNumberOfStartingClusterValueSize = 0;
 	int64_t relativeNumberOfStartingCluster = 0;
